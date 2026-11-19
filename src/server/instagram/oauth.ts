@@ -92,19 +92,20 @@ async function getAppCredentials(): Promise<{
 
 /** Builds the Instagram Business Login authorization URL. */
 
+
 export async function buildAuthorizeUrl(state: string): Promise<string> {
   const { appId, configId } = await getAppCredentials();
 
-  const url = new URL(
-    `https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth`
-  );
+  const url = new URL("https://www.facebook.com/dialog/oauth");
 
   url.searchParams.set("client_id", appId);
   url.searchParams.set("config_id", configId);
+  url.searchParams.set("display", "popup");
+  url.searchParams.set("override_default_response_type", "true");
   url.searchParams.set("redirect_uri", oauthRedirectUri());
   url.searchParams.set("response_type", "code");
   url.searchParams.set("state", state);
-  url.searchParams.set("override_default_response_type", "true");
+  url.searchParams.set("prompt", "login");
 
   return url.toString();
 }

@@ -38,24 +38,28 @@ export interface UpsertAccountInput {
   profilePictureUrl?: string | null;
   accessToken: string;
   expiresInSeconds?: number | null;
+  tokenType?: "instagram_login" | "unified_login";
 }
 
 /**
  * Stores (or re-activates) an account with an encrypted token and makes it the only active one.
  * Existing campaigns stay attached because the row is upserted by `ig_user_id`.
  */
-export async function upsertAccount(input: UpsertAccountInput): Promise<InstagramAccount> {
-  const now = new Date();
-  const values = {
-    igUserId: input.igUserId,
-    username: input.username,
-    name: input.name ?? null,
-    profilePictureUrl: input.profilePictureUrl ?? null,
-    accessTokenEnc: encrypt(input.accessToken),
-    tokenExpiresAt: input.expiresInSeconds ? new Date(now.getTime() + input.expiresInSeconds * 1000) : null,
-    tokenRefreshedAt: now,
-    isActive: true,
-  };
+
+const values = {
+  igUserId: input.igUserId,
+  username: input.username,
+  name: input.name ?? null,
+  profilePictureUrl: input.profilePictureUrl ?? null,
+  accessTokenEnc: encrypt(input.accessToken),
+  tokenType: input.tokenType ?? "instagram_login",
+  tokenExpiresAt: input.expiresInSeconds
+    ? new Date(now.getTime() + input.expiresInSeconds * 1000)
+    : null,
+  tokenRefreshedAt: now,
+  isActive: true,
+};
+
   return db.transaction(async (tx) => {
     const [row] = await tx
       .insert(instagramAccounts)
