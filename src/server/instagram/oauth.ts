@@ -1,23 +1,46 @@
+
 import "server-only";
+
 import { createHmac } from "node:crypto";
 import { z } from "zod";
+
 import { appUrl } from "@/env";
-import { deriveKey, randomToken, safeEqual } from "@/server/crypto";
+import {
+  deriveKey,
+  randomToken,
+  safeEqual,
+} from "@/server/crypto";
 import type { InstagramAccount } from "@/server/db/schema";
 import type { SubscriptionStatus } from "@/lib/webhook-diagnostics";
 import { logger } from "@/server/log";
 import { getSettings, setSetting } from "@/server/settings";
-import { tokenResponseSchema, upsertAccount } from "./account";
-import { GRAPH_API_VERSION } from "./constants";
-import { GraphApiError, graphId, graphRequest, safeErrorMessage } from "./graph";
+
+import {
+  getActiveAccount,
+  tokenResponseSchema,
+  upsertAccount,
+} from "./account";
+
+import {
+  IG_AUTHORIZE_URL,
+  IG_TOKEN_URL,
+} from "./constants";
+
+import {
+  GraphApiError,
+  graphId,
+  graphRequest,
+  safeErrorMessage,
+} from "./graph";
 
 const log = logger("oauth");
 
 export const OAUTH_STATE_COOKIE = "ig_oauth_state";
 export const OAUTH_STATE_MAX_AGE_S = 10 * 60;
-export const OAUTH_CALLBACK_PATH = "/api/instagram/oauth/callback";
+export const OAUTH_CALLBACK_PATH =
+  "/api/instagram/oauth/callback";
 
-/** Machine-readable failure reasons surfaced to the settings page as `?error=<code>`. */
+/** Machine-readable failure reasons surfaced to the settings page. */
 export type OAuthErrorCode =
   | "missing_app_credentials"
   | "access_denied"
@@ -29,6 +52,7 @@ export type OAuthErrorCode =
 
 export class OAuthFlowError extends Error {
   override readonly name = "OAuthFlowError";
+
   constructor(
     readonly code: OAuthErrorCode,
     readonly cause?: unknown,
@@ -45,64 +69,96 @@ export function oauthRedirectUri(): string {
 /* ---------------------------------- state ---------------------------------- */
 
 function signState(state: string): string {
-  return createHmac("sha256", deriveKey("session")).update(`ig-oauth:${state}`).digest("base64url");
+  return createHmac("sha256", deriveKey("session"))
+    .update(`ig-oauth:${state}`)
+    .digest("base64url");
 }
 
-/** New CSRF state: `state` goes to Instagram, `cookieValue` into an httpOnly cookie. */
-export function createOAuthState(): { state: string; cookieValue: string } {
+/** Creates a CSRF-protected OAuth state. */
+export function createOAuthState(): {
+  state: string;
+  cookieValue: string;
+} {
   const state = randomToken(32);
-  return { state, cookieValue: `${state}.${signState(state)}` };
+
+  return {
+    state,
+    cookieValue: `${state}.${signState(state)}`,
+  };
 }
 
-/** Timing-safe check that the returned `state` matches the signed cookie. */
-export function verifyOAuthState(returnedState: string | null, cookieValue: string | undefined): boolean {
+/** Verifies the returned state against the signed cookie. */
+export function verifyOAuthState(
+  returnedState: string | null,
+  cookieValue: string | undefined,
+): boolean {
   if (!returnedState || !cookieValue) return false;
+
   const dot = cookieValue.lastIndexOf(".");
+
   if (dot <= 0) return false;
+
   const state = cookieValue.slice(0, dot);
   const sig = cookieValue.slice(dot + 1);
-  return safeEqual(sig, signState(state)) && safeEqual(state, returnedState);
+
+  return (
+    safeEqual(sig, signState(state)) &&
+    safeEqual(state, returnedState)
+  );
 }
 
-/* ---------------------------------- flow ----------------------------------- */
-
+/* ---------------------------------- config --------------------------------- */
 
 async function getAppCredentials(): Promise<{
   appId: string;
   appSecret: string;
   configId: string;
 }> {
-  const s = await getSettings([
+  const settings = await getSettings([
     "meta.appId",
     "meta.appSecret",
     "meta.configId",
   ]);
 
-  const appId = s["meta.appId"];
-  const appSecret = s["meta.appSecret"];
-  const configId = s["meta.configId"];
+  const appId = settings["meta.appId"];
+  const appSecret = settings["meta.appSecret"];
+  const configId = settings["meta.configId"];
 
   if (!appId || !appSecret || !configId) {
-    throw new OAuthFlowError("missing_app_credentials");
+    throw new OAuthFlowError(
+      "missing_app_credentials",
+    );
   }
 
-  return { appId, appSecret, configId };
+  return {
+    appId,
+    appSecret,
+    configId,
+  };
 }
 
+/* ----------------------------- authorization ------------------------------ */
 
-/** Builds the Instagram Business Login authorization URL. */
+/** Builds the Meta Unified Login authorization URL. */
+export async function buildAuthorizeUrl(
+  state: string,
+): Promise<string> {
+  const { appId, configId } =
+    await getAppCredentials();
 
-
-export async function buildAuthorizeUrl(state: string): Promise<string> {
-  const { appId, configId } = await getAppCredentials();
-
-  const url = new URL("https://www.facebook.com/dialog/oauth");
+  const url = new URL(IG_AUTHORIZE_URL);
 
   url.searchParams.set("client_id", appId);
   url.searchParams.set("config_id", configId);
   url.searchParams.set("display", "popup");
-  url.searchParams.set("override_default_response_type", "true");
-  url.searchParams.set("redirect_uri", oauthRedirectUri());
+  url.searchParams.set(
+    "override_default_response_type",
+    "true",
+  );
+  url.searchParams.set(
+    "redirect_uri",
+    oauthRedirectUri(),
+  );
   url.searchParams.set("response_type", "code");
   url.searchParams.set("state", state);
   url.searchParams.set("prompt", "login");
@@ -110,163 +166,358 @@ export async function buildAuthorizeUrl(state: string): Promise<string> {
   return url.toString();
 }
 
-
-const permissionsSchema = z
-  .union([z.array(z.string()), z.string()])
-  .optional()
-  .transform((p) => (typeof p === "string" ? p.split(",").map((s) => s.trim()) : p));
-
-/** Docs show both a flat object and a `{ data: [...] }` wrapper; accept either. */
-const shortTokenItem = z.object({ access_token: z.string().min(1), permissions: permissionsSchema });
-const shortTokenSchema = z.union([
-  shortTokenItem,
-  z.object({ data: z.array(shortTokenItem).min(1) }).transform((d) => d.data[0]!),
-]);
+/* ------------------------------- API schemas ------------------------------- */
 
 const profileSchema = z.object({
-  user_id: graphId,
+  id: graphId,
   username: z.string().min(1),
-  name: z.string().optional(),
-  profile_picture_url: z.string().optional(),
+  name: z.string().nullish(),
+  profile_picture_url: z.string().nullish(),
 });
 
-const subscribeSchema = z.object({ success: z.boolean().optional() });
+const assignedInstagramAccountsSchema = z.object({
+  data: z.array(profileSchema),
+});
+
+const subscribeSchema = z.object({
+  success: z.boolean().optional(),
+});
+
+const subscribedAppsSchema = z.object({
+  data: z
+    .array(
+      z.object({
+        subscribed_fields: z.array(z.string()).optional(),
+      }).passthrough(),
+    )
+    .optional(),
+});
 
 export interface ConnectResult {
   account: InstagramAccount;
-  /** False when the account was saved but the webhook subscription failed (retryable). */
+  /** False when the account was saved but webhook subscription failed. */
   subscribed: boolean;
 }
 
-/**
- * Completes the OAuth flow: code -> short-lived -> long-lived token, fetch profile, store the
- * encrypted token, subscribe the app to `comments` webhooks. Throws {@link OAuthFlowError}.
- */
-export async function completeOAuth(rawCode: string): Promise<ConnectResult> {
-  const { appId, appSecret } = await getAppCredentials();
-  // Instagram appends `#_` to the code in the redirect; strip it if it leaked into the value.
-  const code = rawCode.replace(/#_$/, "");
+/* ------------------------------ token exchange ----------------------------- */
 
-  let longToken: z.infer<typeof tokenResponseSchema>;
-  try {
-    const short = await graphRequest({
-      method: "POST",
-      path: IG_SHORT_TOKEN_URL,
-      form: {
+/**
+ * Exchanges the authorization code for a Unified Login system-user token.
+ *
+ * Unified Login does not use the old Instagram Login
+ * short-lived-to-long-lived token exchange.
+ */
+async function exchangeAuthorizationCode(
+  code: string,
+  appId: string,
+  appSecret: string,
+): Promise<z.infer<typeof tokenResponseSchema>> {
+  const result = await graphRequest<unknown>(
+    IG_TOKEN_URL,
+    {
+      method: "GET",
+      params: {
         client_id: appId,
         client_secret: appSecret,
-        grant_type: "authorization_code",
         redirect_uri: oauthRedirectUri(),
         code,
       },
-      schema: shortTokenSchema,
       retries: 0,
-    });
-    if (short.permissions && !IG_SCOPES.every((s) => short.permissions!.includes(s))) {
-      throw new OAuthFlowError("missing_permissions");
-    }
-    longToken = await graphRequest({
-      path: IG_LONG_TOKEN_URL,
-      query: { grant_type: "ig_exchange_token", client_secret: appSecret },
-      accessToken: short.access_token,
-      schema: tokenResponseSchema,
-    });
+      timeoutMs: 15_000,
+    },
+  );
+
+  return tokenResponseSchema.parse(result);
+}
+
+/* ---------------------------- account discovery ---------------------------- */
+
+/**
+ * Finds Instagram professional accounts assigned to the system user.
+ *
+ * This application currently supports one active Instagram account.
+ */
+async function fetchAssignedInstagramAccount(
+  accessToken: string,
+): Promise<z.infer<typeof profileSchema>> {
+  const result = await graphRequest<unknown>(
+    "/me/assigned_instagram_accounts",
+    {
+      params: {
+        fields:
+          "id,username,name,profile_picture_url",
+      },
+      accessToken,
+      retries: 0,
+    },
+  );
+
+  const parsed =
+    assignedInstagramAccountsSchema.parse(result);
+
+  if (parsed.data.length !== 1) {
+    throw new OAuthFlowError(
+      "profile_fetch_failed",
+      new Error(
+        `Expected exactly one assigned Instagram account; received ${parsed.data.length}`,
+      ),
+    );
+  }
+
+  return parsed.data[0]!;
+}
+
+/* ---------------------------------- connect -------------------------------- */
+
+/**
+ * Completes Unified Login:
+ *
+ * authorization code
+ *   -> system-user access token
+ *   -> assigned Instagram account
+ *   -> encrypted database storage
+ *   -> Instagram webhook subscription
+ */
+export async function completeOAuth(
+  rawCode: string,
+): Promise<ConnectResult> {
+  const { appId, appSecret } =
+    await getAppCredentials();
+
+  // Meta may append #_ to the authorization code.
+  const code = rawCode.replace(/#_$/, "");
+
+  if (!code) {
+    throw new OAuthFlowError("missing_code");
+  }
+
+  let token: z.infer<typeof tokenResponseSchema>;
+
+  try {
+    token = await exchangeAuthorizationCode(
+      code,
+      appId,
+      appSecret,
+    );
   } catch (err) {
-    if (err instanceof OAuthFlowError) throw err;
-    throw new OAuthFlowError("token_exchange_failed", err);
+    log.warn("oauth.token_exchange_failed", {
+      error: safeErrorMessage(err),
+    });
+
+    throw new OAuthFlowError(
+      "token_exchange_failed",
+      err,
+    );
   }
 
   let profile: z.infer<typeof profileSchema>;
+
   try {
-    profile = await graphRequest({
-      path: "/me",
-      query: { fields: "user_id,username,name,profile_picture_url" },
-      accessToken: longToken.access_token,
-      schema: profileSchema,
-    });
+    profile = await fetchAssignedInstagramAccount(
+      token.access_token,
+    );
   } catch (err) {
-    throw new OAuthFlowError("profile_fetch_failed", err);
+    log.warn("oauth.account_lookup_failed", {
+      error: safeErrorMessage(err),
+    });
+
+    if (err instanceof OAuthFlowError) {
+      throw err;
+    }
+
+    throw new OAuthFlowError(
+      "profile_fetch_failed",
+      err,
+    );
   }
 
   const account = await upsertAccount({
-    igUserId: profile.user_id,
+    igUserId: profile.id,
     username: profile.username,
     name: profile.name ?? null,
-    profilePictureUrl: profile.profile_picture_url ?? null,
-    accessToken: longToken.access_token,
-    expiresInSeconds: longToken.expires_in ?? null,
+    profilePictureUrl:
+      profile.profile_picture_url ?? null,
+    accessToken: token.access_token,
+    expiresInSeconds: token.expires_in ?? null,
+    tokenType: "unified_login",
   });
 
-  const status = await subscribeAndRecord(longToken.access_token, "connect");
-  return { account, subscribed: status.ok };
+  const status = await subscribeAndRecord(
+    token.access_token,
+    "connect",
+    account.igUserId,
+  );
+
+  return {
+    account,
+    subscribed: status.ok,
+  };
 }
 
-/** Subscribes the app to the account's `comments` and `messaging_postbacks` webhook fields. Returns false on failure. */
-export async function subscribeToWebhooks(accessToken: string): Promise<boolean> {
-  return (await subscribeWithDetails(accessToken)).ok;
-}
+/* ------------------------------ webhooks ----------------------------------- */
 
-/** Webhook fields we subscribe to: comments (engine) and postbacks (follow gate button). */
-export const WEBHOOK_SUBSCRIBED_FIELDS = "comments,messaging_postbacks";
-
-const subscribedAppsSchema = z.object({
-  data: z.array(z.looseObject({ subscribed_fields: z.array(z.string()).optional() })).optional(),
-});
+/** Webhook fields required by the application. */
+export const WEBHOOK_SUBSCRIBED_FIELDS =
+  "comments,messaging_postbacks";
 
 /**
- * `POST /me/subscribed_apps?subscribed_fields=comments,messaging_postbacks`, then (best-effort) reads back the
- * subscribed fields. Never throws for Graph API errors; the error text is token-free.
+ * Resolves the Instagram account ID.
+ * The optional argument keeps existing callers compatible.
+ */
+async function resolveInstagramUserId(
+  igUserId?: string,
+): Promise<string> {
+  if (igUserId) return igUserId;
+
+  const account = await getActiveAccount();
+
+  if (!account) {
+    throw new Error("No Instagram account connected");
+  }
+
+  return account.igUserId;
+}
+
+/**
+ * Subscribes the Instagram professional account to webhook fields.
  */
 export async function subscribeWithDetails(
   accessToken: string,
-): Promise<{ ok: boolean; fields?: string[]; error?: string }> {
+  igUserId?: string,
+): Promise<{
+  ok: boolean;
+  fields?: string[];
+  error?: string;
+}> {
   try {
-    const res = await graphRequest({
-      method: "POST",
-      path: "/me/subscribed_apps",
-      query: { subscribed_fields: WEBHOOK_SUBSCRIBED_FIELDS },
-      accessToken,
-      schema: subscribeSchema,
-      idempotent: true,
-    });
-    if (res.success === false) return { ok: false, error: "Instagram answered success: false" };
+    const accountId =
+      await resolveInstagramUserId(igUserId);
+
+    const result = await graphRequest<unknown>(
+      `/${accountId}/subscribed_apps`,
+      {
+        method: "POST",
+        params: {
+          subscribed_fields:
+            WEBHOOK_SUBSCRIBED_FIELDS,
+        },
+        accessToken,
+        retries: 0,
+      },
+    );
+
+    const parsed = subscribeSchema.parse(result);
+
+    if (parsed.success === false) {
+      return {
+        ok: false,
+        error: "Instagram answered success: false",
+      };
+    }
+
+    try {
+      const current = await graphRequest<unknown>(
+        `/${accountId}/subscribed_apps`,
+        {
+          accessToken,
+          retries: 0,
+          timeoutMs: 5_000,
+        },
+      );
+
+      const parsedCurrent =
+        subscribedAppsSchema.parse(current);
+
+      const fields = [
+        ...new Set(
+          (parsedCurrent.data ?? []).flatMap(
+            (item) => item.subscribed_fields ?? [],
+          ),
+        ),
+      ].slice(0, 20);
+
+      return {
+        ok: true,
+        fields,
+      };
+    } catch {
+      // Subscription succeeded; verification was unavailable.
+      return { ok: true };
+    }
   } catch (err) {
-    if (err instanceof GraphApiError) return { ok: false, error: safeErrorMessage(err, [accessToken], 300) };
-    throw err;
-  }
-  try {
-    const current = await graphRequest({
-      path: "/me/subscribed_apps",
-      accessToken,
-      schema: subscribedAppsSchema,
-      retries: 0,
-      timeoutMs: 5_000,
+    if (err instanceof GraphApiError) {
+      return {
+        ok: false,
+        error: safeErrorMessage(err),
+      };
+    }
+
+    log.warn("webhook.subscription_failed", {
+      error: safeErrorMessage(err),
     });
-    const fields = [...new Set((current.data ?? []).flatMap((d) => d.subscribed_fields ?? []))].slice(0, 20);
-    return { ok: true, fields };
-  } catch {
-    return { ok: true };
+
+    return {
+      ok: false,
+      error: safeErrorMessage(err),
+    };
   }
 }
 
-/** Subscribes and persists the outcome in the `webhook.subscription` setting (best-effort). */
+/** Subscribes the currently connected Instagram account. */
+export async function subscribeToWebhooks(
+  accessToken: string,
+  igUserId?: string,
+): Promise<boolean> {
+  const result = await subscribeWithDetails(
+    accessToken,
+    igUserId,
+  );
+
+  return result.ok;
+}
+
+/** Subscribes and records the result in the webhook settings. */
 export async function subscribeAndRecord(
   accessToken: string,
   source: SubscriptionStatus["source"],
+  igUserId?: string,
 ): Promise<SubscriptionStatus> {
-  const result = await subscribeWithDetails(accessToken);
+  const result = await subscribeWithDetails(
+    accessToken,
+    igUserId,
+  );
+
   const status: SubscriptionStatus = {
     ok: result.ok,
     at: new Date().toISOString(),
     source,
-    ...(result.fields ? { fields: result.fields } : {}),
-    ...(result.error ? { error: result.error } : {}),
+    ...(result.fields
+      ? { fields: result.fields }
+      : {}),
+    ...(result.error
+      ? { error: result.error }
+      : {}),
   };
+
   try {
-    await setSetting("webhook.subscription", status);
+    await setSetting(
+      "webhook.subscription",
+      status,
+    );
   } catch (err) {
-    log.warn("webhook.subscription_record_failed", { err: safeErrorMessage(err) });
+    log.warn(
+      "webhook.subscription_record_failed",
+      {
+        error: safeErrorMessage(err),
+      },
+    );
   }
-  log.info("webhook.subscribed", { ok: status.ok, source, fields: status.fields });
+
+  log.info("webhook.subscribed", {
+    ok: status.ok,
+    source,
+    fields: status.fields,
+  });
+
   return status;
 }
