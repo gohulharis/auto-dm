@@ -75,6 +75,7 @@ export type MetaReviewUrls = {
 
 export function InstagramTab(props: {
   appId: string;
+  configId: string;
   appSecretConfigured: boolean;
   account: Account | null;
   webhookUrl: string;
@@ -86,14 +87,18 @@ export function InstagramTab(props: {
   webhookRequests: WebhookRequestView[];
   subscription: SubscriptionStatus | null;
 }) {
-  const configured = !!props.appId && props.appSecretConfigured;
+  const configured =
+  !!props.appId &&
+  !!props.configId &&
+  props.appSecretConfigured;
   return (
     <div className="grid max-w-3xl grid-cols-1 gap-6">
       <MetaAppCard
-        appId={props.appId}
-        secretConfigured={props.appSecretConfigured}
-        redirectUri={props.redirectUri}
-      />
+  appId={props.appId}
+  configId={props.configId}
+  secretConfigured={props.appSecretConfigured}
+  redirectUri={props.redirectUri}
+/>
       <ConnectionCard account={props.account} configured={configured} />
       <WebhookCard webhookUrl={props.webhookUrl} receivedEvents={props.receivedEvents} mode={props.mode} />
       <WebhookDiagnosticsCard
@@ -144,18 +149,25 @@ function CopyField({
 
 function MetaAppCard({
   appId,
+  configId,
   secretConfigured,
   redirectUri,
 }: {
   appId: string;
+  configId: string;
   secretConfigured: boolean;
   redirectUri: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [values, setValues] = useState({ appId, appSecret: "" });
-  const [errors, setErrors] = useState<FieldErrors>({});
 
+  const [values, setValues] = useState({
+    appId,
+    configId,
+    appSecret: "",
+  });
+
+  const [errors, setErrors] = useState<FieldErrors>({});
   return (
     <Card>
       <form
@@ -180,8 +192,8 @@ function MetaAppCard({
         <CardHeader>
           <CardTitle>Meta app</CardTitle>
           <CardDescription>
-            From developers.facebook.com → your app → Instagram → API setup with Instagram login.
-          </CardDescription>
+  Configure your Meta app credentials and Instagram Unified Login settings.
+</CardDescription>
           <CardAction>
             {appId && secretConfigured ? (
               <Badge variant="success">
@@ -198,16 +210,33 @@ function MetaAppCard({
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="meta-app-id">Instagram App ID</Label>
-              <Input
-                id="meta-app-id"
-                inputMode="numeric"
-                autoComplete="off"
-                value={values.appId}
-                onChange={(e) => setValues((v) => ({ ...v, appId: e.target.value }))}
-                aria-invalid={!!errors.appId}
-                aria-describedby={errors.appId ? "meta-app-id-error" : undefined}
-              />
-              <FieldError id="meta-app-id-error" errors={errors.appId} />
+              <div className="grid gap-2">
+  <Label htmlFor="meta-config-id">
+    Unified Login Configuration ID
+  </Label>
+
+  <Input
+    id="meta-config-id"
+    inputMode="numeric"
+    autoComplete="off"
+    placeholder="Enter Configuration ID"
+    value={values.configId}
+    onChange={(e) =>
+      setValues((v) => ({
+        ...v,
+        configId: e.target.value,
+      }))
+    }
+    aria-invalid={!!errors.configId}
+    aria-describedby={
+      errors.configId ? "meta-config-id-error" : undefined
+    }
+  />
+
+  <FieldError
+    id="meta-config-id-error"
+    errors={errors.configId}
+  />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="meta-app-secret" className="flex items-center gap-2">
@@ -237,7 +266,7 @@ function MetaAppCard({
             id="oauth-redirect"
             label="OAuth redirect URI"
             value={redirectUri}
-            help="Add this under “Valid OAuth Redirect URIs” in the Instagram business login settings."
+          help="Add this exact URI to the redirect URI allowlist required by your Meta login configuration."
           />
         </CardContent>
         <CardFooter className="justify-end border-t">

@@ -111,8 +111,9 @@ export default async function SettingsPage({
         </TabsContent>
         <TabsContent value="instagram">
           <InstagramTab
-            appId={settings["meta.appId"].value ?? ""}
-            appSecretConfigured={settings["meta.appSecret"].configured}
+              appId={settings["meta.appId"].value ?? ""}
+              configId={settings["meta.configId"].value ?? ""}
+              appSecretConfigured={settings["meta.appSecret"].configured}
             account={
               account
                 ? {
