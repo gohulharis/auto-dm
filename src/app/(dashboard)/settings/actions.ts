@@ -85,19 +85,31 @@ export const savePublicContactAction = authedAction(
 
 /* -------------------------------- instagram ------------------------------- */
 
+
 export const saveMetaAppAction = authedAction(
   "settings",
   "save_meta_app",
   metaAppSchema,
-  async ({ appId, appSecret }) => {
+  async ({ appId, configId, appSecret }) => {
     await setSetting("meta.appId", appId);
-    if (appSecret) await setSetting("meta.appSecret", appSecret);
-    log.info("meta_app.saved", { secretUpdated: !!appSecret });
+    await setSetting("meta.configId", configId);
+
+    if (appSecret) {
+      await setSetting("meta.appSecret", appSecret);
+    }
+
+    log.info("meta_app.saved", {
+      configId,
+      secretUpdated: !!appSecret,
+    });
+
     revalidatePath("/settings");
     revalidatePath("/dashboard");
+
     return ok();
   },
 );
+
 
 /** Returns the webhook verify token (created on first use) for the copy/reveal UI. */
 export const revealVerifyTokenAction = authedAction(

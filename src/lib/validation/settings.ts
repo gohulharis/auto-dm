@@ -1,19 +1,30 @@
 import { z } from "zod";
 import { isValidTimeZone } from "@/lib/timezone";
 
+
 export const metaAppSchema = z.object({
   appId: z
     .string()
     .trim()
     .regex(/^\d{5,25}$/, "The App ID is a number (5–25 digits)"),
+
+  configId: z
+    .string()
+    .trim()
+    .regex(/^\d{5,30}$/, "The Configuration ID must be a number"),
+
   /** Write-only: blank keeps the stored secret. */
   appSecret: z
     .string()
     .trim()
-    .refine((v) => v === "" || (v.length >= 16 && v.length <= 128), "The App Secret is 16–128 characters")
+    .refine(
+      (v) => v === "" || (v.length >= 16 && v.length <= 128),
+      "The App Secret is 16–128 characters",
+    )
     .optional()
     .default(""),
 });
+
 
 export const processingSchema = z.object({
   mode: z.enum(["webhook", "n8n"]),
