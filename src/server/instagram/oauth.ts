@@ -8,7 +8,7 @@ import type { SubscriptionStatus } from "@/lib/webhook-diagnostics";
 import { logger } from "@/server/log";
 import { getSettings, setSetting } from "@/server/settings";
 import { tokenResponseSchema, upsertAccount } from "./account";
-import { IG_AUTHORIZE_URL, IG_LONG_TOKEN_URL, IG_SCOPES, IG_SHORT_TOKEN_URL } from "./constants";
+import { GRAPH_API_VERSION } from "./constants";
 import { GraphApiError, graphId, graphRequest, safeErrorMessage } from "./graph";
 
 const log = logger("oauth");
@@ -66,27 +66,49 @@ export function verifyOAuthState(returnedState: string | null, cookieValue: stri
 
 /* ---------------------------------- flow ----------------------------------- */
 
-async function getAppCredentials(): Promise<{ appId: string; appSecret: string }> {
-  const s = await getSettings(["meta.appId", "meta.appSecret"]);
+
+async function getAppCredentials(): Promise<{
+  appId: string;
+  appSecret: string;
+  configId: string;
+}> {
+  const s = await getSettings([
+    "meta.appId",
+    "meta.appSecret",
+    "meta.configId",
+  ]);
+
   const appId = s["meta.appId"];
   const appSecret = s["meta.appSecret"];
-  if (!appId || !appSecret) throw new OAuthFlowError("missing_app_credentials");
-  return { appId, appSecret };
+  const configId = s["meta.configId"];
+
+  if (!appId || !appSecret || !configId) {
+    throw new OAuthFlowError("missing_app_credentials");
+  }
+
+  return { appId, appSecret, configId };
 }
 
+
 /** Builds the Instagram Business Login authorization URL. */
+
 export async function buildAuthorizeUrl(state: string): Promise<string> {
-  const { appId } = await getAppCredentials();
-  const url = new URL(IG_AUTHORIZE_URL);
+  const { appId, configId } = await getAppCredentials();
+
+  const url = new URL(
+    `https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth`
+  );
+
   url.searchParams.set("client_id", appId);
+  url.searchParams.set("config_id", configId);
   url.searchParams.set("redirect_uri", oauthRedirectUri());
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", IG_SCOPES.join(","));
   url.searchParams.set("state", state);
-  url.searchParams.set("enable_fb_login", "0");
-  url.searchParams.set("force_reauth", "true");
+  url.searchParams.set("override_default_response_type", "true");
+
   return url.toString();
 }
+
 
 const permissionsSchema = z
   .union([z.array(z.string()), z.string()])
